@@ -132,7 +132,7 @@ See [docs/tech-decisions.md](docs/tech-decisions.md) for detailed ADR excerpts.
 - **199+ pytest tests** with rubric calibration validation
 - **ISR (90-pt) + OSR (100-pt) dual rubric system** with per-persona grading
 - **Snowpipe → Snowflake analytics pipeline** for grading trend analysis
-- **5 completed phases** (Infrastructure, Identity, Brain 1, Brain 2, Frontend)
+- **6 completed phases** (Infrastructure, Identity, Brain 1, Brain 2, Frontend, Hardening)
 - **Production-ready**: LiveKit v1.5, Next.js 16, full accessibility compliance
 
 ## Project Status
@@ -143,8 +143,8 @@ See [docs/tech-decisions.md](docs/tech-decisions.md) for detailed ADR excerpts.
 | Phase 2: Identity Layer | ✅ | JIT metadata injection, multi-persona support |
 | Phase 3: Brain 1 (The Actor) | ✅ | Real-time voice agent with dynamic personas |
 | Phase 4: Brain 2 (The Grader) | ✅ | Rubric grading pipeline, email delivery, analytics |
-| Phase 5: Frontend | 🟡 | Next.js UI with LiveKit WebRTC integration |
-| Phase 5.5: Agent Hardening | 🟡 | Identity anchoring, VAD tuning, disconnect resilience |
+| Phase 5: Frontend | ✅ | Next.js UI with LiveKit WebRTC integration |
+| Phase 5.5: Agent Hardening | ✅ | Identity anchoring, VAD tuning, disconnect resilience |
 
 ---
 
