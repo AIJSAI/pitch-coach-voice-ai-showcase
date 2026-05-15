@@ -94,3 +94,35 @@ This document contains excerpts from the project's Architecture Decision Records
 - Persona authors set one parameter (`interrupt_sensitivity`) instead of coordinating two VAD knobs.
 - Data-driven calibration possible via Snowflake analytics.
 - 34-ghost-trigger problem reduced to near-zero in production testing.
+
+---
+
+## ADR-020: Half-Cascade Architecture (DragonHD TTS for Voice Gender Drift Fix)
+
+**Status**: Accepted
+**Supersedes**: Portions of ADR-001 — audio synthesis ownership shifts from `gpt-realtime` to Azure Speech.
+
+**Context**: Voice gender drift was reproduced repeatedly through Phase 5–9.3 sessions and confirmed via telemetry (`voice.item.snapshot` per-conversation-item `voice_id`) — the configured voice stayed pinned to its persona's setting throughout each session, but listeners reported the assistant's voice wobbling between gender presentations mid-conversation. The drift originated downstream of every config knob the application controlled, inside `gpt-realtime`'s audio synthesis layer. No prompt-side fix could address it because the model itself decides the final waveform.
+
+LiveKit documents a half-cascade pattern for exactly this class of problem: the realtime model emits text only (`modalities=["text"]`), and a separate TTS engine synthesizes the audio. With a deterministic voice ID, voice gender cannot drift by construction — identical text in the same voice produces identical audio bytes.
+
+**Decision**: Switch Brain 1 to half-cascade for all personas.
+
+1. `RealtimeModel.with_azure(modalities=["text"], ...)` — `gpt-realtime` emits text only.
+2. `livekit-plugins-azure` `azure.TTS` wired into `AgentSession(tts=...)` with per-persona DragonHD voice IDs (e.g., `en-US-Ava:DragonHDLatestNeural`, `en-US-Andrew:DragonHDLatestNeural`).
+3. Managed-identity auth via a new `utils/speech_auth.py` module that returns the `aad#{resourceId}#{aadToken}` wrapped token with a 5-min expiry-refresh cache.
+4. Volume-boost code retired (~412 lines including tests) — Azure TTS emits at standard amplitude.
+5. Bicep provisions a SystemAssigned-MI Speech account with the custom subdomain required for Entra auth; the agent ACA is granted `Cognitive Services Speech User` scoped to that Speech resource.
+6. Telemetry: `TTSMetrics.ttfb` dispatch feeds first-byte latency to KQL Q8 (p50/p95); Q9 enforces the `dcount(azure_tts_voice) == 1` per-session invariant as a regression guard.
+
+**Consequences**:
+- **(+)** Deterministic per-persona voice — voice gender cannot drift; pilot launch criterion #1 cleared.
+- **(+)** 600+ Azure voices available; swapping voices or adopting a future Custom Neural Voice is a single config field.
+- **(+)** ~98% per-session cost reduction versus full audio-to-audio (Azure TTS at $15/1M chars vs. `gpt-realtime` audio output at $0.20/1K tokens).
+- **(+)** LLM-quality and TTS-quality decoupled — model upgrades no longer regress voice; voice upgrades no longer regress turn handling.
+- **(+)** No plaintext Speech key — managed-identity auth via custom-subdomain Entra token wrapping; rotation is automatic at the Azure side.
+- **(−)** +~150–300ms TTS hop. Steady-state glass-to-glass remains under 1000ms with ~150–450ms headroom; first-turn variance is tighter due to the plugin's lack of pre-connect pooling. Mitigation: synthesize a brief warmup utterance on session start if Q8 first-turn p95 exceeds 800ms post-pilot.
+- **(−)** Adds Azure Speech as a runtime dependency, deployed in the same region and managed-identity scope as the agent.
+- **(−)** Non-Omni DragonHD voices (Ava, Emma, Andrew, Adam) support only the `temperature` knob; full `<mstts:express-as>` style support is reserved for Omni voices. Acceptable for pilot.
+
+**Pre-merge measurement (stg)**: Q1/Q9 invariants held across 6/6 persona sessions. Q8 TTS TTFB direct measurement p50 ~237ms, p95 ~316ms — well under the 1000ms HARD gate.
