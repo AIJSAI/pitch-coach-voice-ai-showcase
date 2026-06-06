@@ -4,7 +4,7 @@
 
 ---
 
-**This repository documents the architecture and design decisions for Pitch Coach AI. Source code is available upon request for interview processes.**
+**This repository documents the architecture and design decisions for Pitch Coach AI. Source code is available on request.**
 
 📄 [Portfolio Case Study](https://jamesshehan.dev/projects/pitch-coach-ai) · 📝 [Blog Deep Dive](https://jamesshehan.dev/blog/building-real-time-voice-ai-sales-coach) · 📬 [Request Source Access](mailto:james@jamesshehan.dev?subject=Source%20Access%20Request%20-%20Pitch%20Coach%20AI)
 
@@ -32,7 +32,7 @@ flowchart LR
     subgraph Voice["Real-Time Voice (Brain 1)"]
         LK["LiveKit Cloud\n(WebRTC)"]
         B1["Container App\n(Python Agent)"]
-        RT["Azure OpenAI\ngpt-realtime-1.5\n(text only)"]
+        RT["Azure OpenAI\ngpt-realtime\n(text only)"]
         TTS["Azure Speech\nDragonHD TTS\n(per-persona voice)"]
     end
 
@@ -77,12 +77,12 @@ flowchart LR
 
 | Component | Model | Function | Latency |
 |-----------|-------|----------|---------|
-| **Brain 1: The Actor (text)** | `gpt-realtime-1.5` (text-only modality) | Real-time conversational reasoning | <500ms TTFT |
-| **Brain 1: The Actor (voice)** | Azure DragonHD TTS (per-persona voice) | Deterministic audio synthesis | <300ms TTFB (Q8 measured p95 ~316ms) |
+| **Brain 1: The Actor (text)** | `gpt-realtime` (text-only modality) | Real-time conversational reasoning | <500ms TTFT |
+| **Brain 1: The Actor (voice)** | Azure DragonHD TTS (per-persona voice) | Deterministic audio synthesis | TTFB p50 ~237ms / p95 ~316ms (Q8 measured) |
 | **Brain 2: The Grader** | `o4-mini` | Async transcript analysis & rubric grading | 5-15s (non-blocking) |
 | **Air Gap** | Azure Blob Storage | Decouples brains via event triggers | n/a |
 
-**Why two brains?** A monolithic architecture where grading occurs in-line is impossible within the latency budget. Brain 2 runs asynchronously after the session ends, decoupled by an Azure Blob event trigger.
+**Why two brains?** A monolithic architecture where grading occurs in-line cannot fit within the latency budget (o4-mini grading takes 5-15s against a sub-1s glass-to-glass requirement). Brain 2 runs asynchronously after the session ends, decoupled by an Azure Blob event trigger.
 
 **Why half-cascade in Brain 1?** Voice-gender drift from `gpt-realtime`'s audio synthesis layer made personas wobble mid-conversation. The fix (ADR-020) splits Brain 1: `gpt-realtime` emits text only, and a separate Azure DragonHD TTS engine synthesizes audio with a per-persona deterministic voice ID. Voice gender cannot drift by construction. Bonus: ~98% per-session cost reduction versus full audio-to-audio billing.
 
@@ -90,8 +90,8 @@ flowchart LR
 
 | Technology | Role | Why This Choice |
 |-----------|------|-----------------|
-| Azure OpenAI `gpt-realtime-1.5` | Real-time conversational reasoning (Brain 1, text-only modality after ADR-020) | Low-latency token generation, tool calling, structured persona behavior |
-| Azure Speech DragonHD TTS | Audio synthesis (Brain 1, half-cascade after ADR-020) | Deterministic per-persona voice ID; voice gender cannot drift; <300ms first-byte latency |
+| Azure OpenAI `gpt-realtime` | Real-time conversational reasoning (Brain 1, text-only modality after ADR-020) | Low-latency token generation, tool calling, structured persona behavior |
+| Azure Speech DragonHD TTS | Audio synthesis (Brain 1, half-cascade after ADR-020) | Deterministic per-persona voice ID; voice gender cannot drift; ~237ms p50 first-byte latency |
 | LiveKit Cloud + Agents SDK v1.5.9 | WebRTC transport & agent framework | Managed SFU with global edge network, Python agent SDK, `livekit-plugins-azure` for half-cascade TTS routing |
 | Microsoft Entra (Managed Identity) | Speech service auth | `aad#{resourceId}#{aadToken}` wrapper; no plaintext Speech key, automatic rotation |
 | Azure Functions (Python) | Grading pipeline (Brain 2) | Blob-triggered serverless, scales to zero, no infrastructure management |
@@ -108,11 +108,11 @@ flowchart LR
 
 **Challenge**: The ITU 150ms degradation threshold vs. 5-15s grading compute time made in-line grading impossible.
 
-**Solution**: Two-Brain split (ADR-001). Brain 1 uses `gpt-realtime-1.5` with audio-to-audio modality (no intermediate text transcoding), achieving <1,000ms glass-to-glass. Brain 2 runs asynchronously via Azure Blob trigger, completely decoupled from the voice session.
+**Solution**: Two-Brain split (ADR-001). Brain 1 uses `gpt-realtime` in a half-cascade: the model emits text, and Azure DragonHD TTS synthesizes the audio separately, achieving <1,000ms glass-to-glass. Brain 2 runs asynchronously via Azure Blob trigger, completely decoupled from the voice session.
 
 ### 2. Rubric Alignment Drift
 
-**Challenge**: Initial calibration testing revealed 50% of official OSR criteria were missing (10 criteria implemented vs. 20 in the official rubric), and ISR empathy weighting was inflated by 100% (22 pts vs. 11 pts official).
+**Challenge**: Initial calibration testing surfaced gaps against the official rubric: missing OSR criteria, inflated ISR empathy scoring, and other criterion-weighting discrepancies.
 
 **Solution**: Full audit and realignment (ADR-008, stakeholder-approved). Expanded OSR from 2-criterion to 4-criterion per category (20 total). Corrected ISR empathy weighting. Created fair-band test transcripts for calibration validation. 199+ pytest tests ensure ongoing alignment.
 
@@ -124,7 +124,7 @@ flowchart LR
 
 ### 4. Voice Activity Detection Tuning
 
-**Challenge**: Ghost triggers (false speech detections) in production demos (34 ghost triggers in a 7.7-minute session) caused the AI persona to interrupt users mid-sentence.
+**Challenge**: Ghost triggers (false speech detections) in production demos caused the AI persona to interrupt users mid-sentence at a rate that made extended demos unreliable.
 
 **Solution**: Iterative VAD tuning across 5 addenda to ADR-012. Implemented per-persona VAD sensitivity mapping (`interrupt_sensitivity` → `vad_threshold` + `vad_silence_duration_ms`), re-differentiated ISR vs. OSR profiles, and added ghost trigger analytics to the Snowflake pipeline for data-driven tuning.
 
@@ -134,7 +134,7 @@ flowchart LR
 |-----|----------|-----------|
 | ADR-001 | Two-Brain Architecture | Only viable strategy for <1s voice + deep grading |
 | ADR-005 | Universal Envelope Multi-Rubric | Support ISR (90-pt) and OSR (100-pt) rubrics with single schema via `rubric_payload` VARIANT |
-| ADR-008 | Rubric Alignment with Official Sources | 50% criteria drift discovered in calibration; full realignment with stakeholder approval |
+| ADR-008 | Rubric Alignment with Official Sources | Calibration gaps discovered (missing criteria, inflated scores); full realignment with stakeholder approval |
 | ADR-010 | ServerVad over SemanticVad | SemanticVad introduced latency regression; ServerVad provides deterministic ms-level turn boundary control |
 | ADR-012 | Interrupt Sensitivity Mapping | Single `interrupt_sensitivity` enum replaces coordinating two VAD parameters per persona |
 | ADR-020 | Half-Cascade Architecture (DragonHD TTS) | Voice gender drift fix: `gpt-realtime` emits text only, Azure DragonHD TTS owns synthesis with deterministic per-persona voice IDs; ~98% per-session cost reduction |
@@ -169,4 +169,4 @@ See [docs/tech-decisions.md](docs/tech-decisions.md) for detailed ADR excerpts.
 
 **Built by [James Shehan](https://jamesshehan.dev)** · TPM / Solutions Architect
 
-📬 [Request source code access](mailto:james@jamesshehan.dev?subject=Source%20Access%20Request%20-%20Pitch%20Coach%20AI) for interview review
+📬 [Request source access](mailto:james@jamesshehan.dev?subject=Source%20Access%20Request%20-%20Pitch%20Coach%20AI)
